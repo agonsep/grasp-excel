@@ -34,14 +34,17 @@ public class HtmlExcelConverter
         ["xls-date-GenLongFormat"]   = "M/d/yyyy h:mm:ss AM/PM",
     };
 
-    // ----- Row style definitions (CSS class → style info) -----
-    private static readonly Dictionary<string, RowStyle> RowStyles = new(StringComparer.OrdinalIgnoreCase)
+    // ----- Default row style definitions (CSS class → style info) -----
+    // These are used as fallbacks when CSS styles can't be parsed from the document
+    private static readonly Dictionary<string, RowStyle> DefaultRowStyles = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["ReportHeader"]     = new RowStyle(XLColor.White, XLColor.Black, true),
-        ["ReportItem"]       = new RowStyle(XLColor.Black, XLColor.White, false),
-        ["AlternatingItem"]  = new RowStyle(XLColor.Black, XLColor.FromName("Gainsboro"), false),
-        ["ReportFooter"]     = new RowStyle(XLColor.Black, XLColor.White, true),
+        ["ReportHeader"]     = new RowStyle(XLColor.White, XLColor.Black, true, 9),
+        ["ReportItem"]       = new RowStyle(XLColor.Black, XLColor.White, false, 8),
+        ["AlternatingItem"]  = new RowStyle(XLColor.Black, XLColor.FromName("Gainsboro"), false, 8),
+        ["ReportFooter"]     = new RowStyle(XLColor.Black, XLColor.White, true, 8),
     };
+
+    private static readonly TableStyle DefaultTableStyle = new(XLColor.Black);
 
     /// <summary>
     /// Convert an HTML-based .xls/.mht file to a proper .xlsx file.
@@ -55,6 +58,9 @@ public class HtmlExcelConverter
 
         var doc = new HtmlDocument();
         doc.LoadHtml(html);
+
+        // Parse CSS styles from the document (falls back to hardcoded defaults)
+        var (rowStyles, tableStyle) = ParseCssStyles(doc);
 
         // Find the main data table (class="ReportTable")
         var reportTable = doc.DocumentNode.SelectSingleNode("//table[contains(@class,'ReportTable')]");
@@ -134,8 +140,8 @@ public class HtmlExcelConverter
                 // Apply alignment
                 ApplyAlignment(xlCell, td);
 
-                // Apply row-level styling
-                ApplyRowStyle(xlCell, rowClass);
+                // Apply row-level styling (from parsed CSS or defaults)
+                ApplyRowStyle(xlCell, rowClass, rowStyles, tableStyle);
             }
         }
 
@@ -293,43 +299,39 @@ public class HtmlExcelConverter
     }
 
     /// <summary>
-    /// Apply row-level visual styling (font color, background, bold) based on CSS class.
+    /// Apply row-level visual styling (font color, background, bold, borders) based on parsed CSS.
     /// </summary>
-    private void ApplyRowStyle(IXLCell cell, string rowClass)
+    private void ApplyRowStyle(IXLCell cell, string rowClass,
+                               Dictionary<string, RowStyle> rowStyles, TableStyle tableStyle)
     {
-        foreach (var kvp in RowStyles)
+        foreach (var kvp in rowStyles)
         {
             if (rowClass.Contains(kvp.Key, StringComparison.OrdinalIgnoreCase))
             {
                 var style = kvp.Value;
                 cell.Style.Font.FontColor = style.FontColor;
                 cell.Style.Fill.BackgroundColor = style.BackgroundColor;
-                if (style.Bold)
-                    cell.Style.Font.Bold = true;
+                cell.Style.Font.Bold = style.Bold;
+                cell.Style.Font.Italic = style.Italic;
+                cell.Style.Font.FontSize = style.FontSize;
 
-                // Header gets a border too
-                if (kvp.Key == "ReportHeader")
-                {
-                    cell.Style.Border.BottomBorder = XLBorderStyleValues.Thin;
-                    cell.Style.Border.BottomBorderColor = XLColor.White;
-                }
+                // Apply cell borders from table style (ReportTable border-color)
+                cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+                cell.Style.Border.OutsideBorderColor = tableStyle.BorderColor;
 
                 // Footer gets a top double border
                 if (kvp.Key == "ReportFooter")
                 {
                     cell.Style.Border.TopBorder = XLBorderStyleValues.Double;
+                    cell.Style.Border.TopBorderColor = tableStyle.BorderColor;
                 }
 
                 break;
             }
         }
 
-        // Set font family and size from CSS
+        // Set font family from ReportTable td CSS
         cell.Style.Font.FontName = "Tahoma";
-        if (rowClass.Contains("ReportHeader", StringComparison.OrdinalIgnoreCase))
-            cell.Style.Font.FontSize = 9;
-        else
-            cell.Style.Font.FontSize = 8;
     }
 
     /// <summary>
@@ -348,6 +350,174 @@ public class HtmlExcelConverter
         // Excel sheet names cannot contain: \ / ? * [ ] :
         var sanitized = Regex.Replace(name, @"[\\/?*\[\]:]", "_");
         return sanitized.Length > 31 ? sanitized[..31] : sanitized;
+    }
+
+    // =====================================================================
+    //  CSS style parsing
+    // =====================================================================
+
+    /// <summary>
+    /// Parse CSS styles from HTML &lt;style&gt; blocks to dynamically build row and table styles.
+    /// Falls back to hardcoded defaults when CSS values aren't found in the document.
+    /// </summary>
+    private static (Dictionary<string, RowStyle> rowStyles, TableStyle tableStyle) ParseCssStyles(HtmlDocument doc)
+    {
+        // Collect all CSS text from <style> blocks
+        var styleNodes = doc.DocumentNode.SelectNodes("//style");
+        if (styleNodes == null || styleNodes.Count == 0)
+            return (new Dictionary<string, RowStyle>(DefaultRowStyles, StringComparer.OrdinalIgnoreCase), DefaultTableStyle);
+
+        var cssText = string.Join("\n", styleNodes.Select(s => s.InnerText));
+
+        // Parse styles for each row class, falling back to defaults
+        var result = new Dictionary<string, RowStyle>(StringComparer.OrdinalIgnoreCase);
+        foreach (var className in new[] { "ReportHeader", "ReportItem", "AlternatingItem", "ReportFooter" })
+        {
+            var def = DefaultRowStyles.GetValueOrDefault(className,
+                new RowStyle(XLColor.Black, XLColor.White, false, 8));
+
+            var fontColorStr = FindCssProperty(cssText, className, "color");
+            var bgColorStr = FindCssProperty(cssText, className, "background-color");
+            var fontWeightStr = FindCssProperty(cssText, className, "font-weight");
+            var fontStyleStr = FindCssProperty(cssText, className, "font-style");
+            var fontSizeStr = FindCssProperty(cssText, className, "font-size");
+
+            var fontColor = fontColorStr != null ? ParseCssColor(fontColorStr) : def.FontColor;
+            var bgColor = bgColorStr != null ? ParseCssColor(bgColorStr) : def.BackgroundColor;
+            var bold = fontWeightStr != null
+                ? fontWeightStr.Equals("bold", StringComparison.OrdinalIgnoreCase)
+                : def.Bold;
+            var italic = fontStyleStr != null
+                && fontStyleStr.Equals("italic", StringComparison.OrdinalIgnoreCase);
+            var fontSize = fontSizeStr != null ? ParseFontSize(fontSizeStr) : def.FontSize;
+
+            result[className] = new RowStyle(fontColor, bgColor, bold, fontSize, italic);
+        }
+
+        // Parse ReportTable border color
+        var tableBorderColorStr = FindCssProperty(cssText, "ReportTable", "border-color");
+        var tableStyle = tableBorderColorStr != null
+            ? new TableStyle(ParseCssColor(tableBorderColorStr))
+            : DefaultTableStyle;
+
+        // Also check for cell-level border color overrides (shorthand border property)
+        var cellBorderColor = FindCellBorderColor(cssText);
+        if (cellBorderColor != null)
+            tableStyle = new TableStyle(cellBorderColor);
+
+        return (result, tableStyle);
+    }
+
+    /// <summary>
+    /// Find the last-defined value of a CSS property for rules whose selector mentions the given class.
+    /// For "color", uses a negative lookbehind to avoid matching "background-color" or "border-color".
+    /// </summary>
+    private static string? FindCssProperty(string css, string className, string property)
+    {
+        // Match all rule blocks whose selector mentions this class name
+        var blockPattern = new Regex(
+            @"[^{}]*\." + Regex.Escape(className) + @"\b[^{}]*\{(?<props>[^}]*)\}",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        string? lastValue = null;
+        foreach (Match block in blockPattern.Matches(css))
+        {
+            var props = block.Groups["props"].Value;
+
+            // For "color", use negative lookbehind to avoid matching compound properties
+            string prefix = property == "color" ? @"(?<![a-zA-Z-])" : "";
+            string propRegex = prefix + Regex.Escape(property) + @"\s*:\s*(?<value>[^;}\n]+?)\s*(?:[;}\n]|$)";
+
+            var propMatch = Regex.Match(props, propRegex, RegexOptions.IgnoreCase);
+            if (propMatch.Success)
+                lastValue = propMatch.Groups["value"].Value.Trim();
+        }
+
+        return lastValue;
+    }
+
+    /// <summary>
+    /// Look for cell-level border color overrides in shorthand border declarations.
+    /// e.g., ".ReportHeader td, .ReportItem td { border: 0.1pt solid #00FFFF }"
+    /// </summary>
+    private static XLColor? FindCellBorderColor(string css)
+    {
+        var pattern = new Regex(
+            @"(?:ReportHeader|ReportItem|AlternatingItem)\s[^{}]*\{[^}]*\bborder\s*:\s*(?<value>[^;}\n]+)",
+            RegexOptions.IgnoreCase);
+
+        var match = pattern.Match(css);
+        if (!match.Success) return null;
+
+        var value = match.Groups["value"].Value.Trim();
+
+        // Extract hex color from shorthand like "0.1pt solid #00FFFF"
+        var hexMatch = Regex.Match(value, @"(#[0-9a-fA-F]{3,8})");
+        if (hexMatch.Success)
+            return ParseCssColor(hexMatch.Groups[1].Value);
+
+        // Try named color: last token that isn't a size or border style keyword
+        var tokens = value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var t in tokens.Reverse())
+        {
+            if (!Regex.IsMatch(t, @"^\d") &&
+                !Regex.IsMatch(t, @"^(solid|dashed|dotted|double|none|groove|ridge|inset|outset)$", RegexOptions.IgnoreCase))
+                return ParseCssColor(t);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Convert a CSS color string (hex or named) to an XLColor.
+    /// </summary>
+    private static XLColor ParseCssColor(string cssColor)
+    {
+        cssColor = cssColor.Trim();
+        if (cssColor.StartsWith('#'))
+            return XLColor.FromHtml(cssColor);
+
+        // Map common CSS color names to XLColor
+        return cssColor.ToLowerInvariant() switch
+        {
+            "black"      => XLColor.Black,
+            "white"      => XLColor.White,
+            "red"        => XLColor.Red,
+            "blue"       => XLColor.Blue,
+            "green"      => XLColor.Green,
+            "yellow"     => XLColor.Yellow,
+            "gainsboro"  => XLColor.FromName("Gainsboro"),
+            "gray" or "grey" => XLColor.Gray,
+            "silver"     => XLColor.FromName("Silver"),
+            "transparent" or "inherit" => XLColor.NoColor,
+            _            => TryParseNamedColor(cssColor),
+        };
+    }
+
+    /// <summary>
+    /// Attempt to parse a named color using System.Drawing, falling back to Black.
+    /// </summary>
+    private static XLColor TryParseNamedColor(string name)
+    {
+        try
+        {
+            return XLColor.FromName(name);
+        }
+        catch
+        {
+            return XLColor.Black;
+        }
+    }
+
+    /// <summary>
+    /// Parse a CSS font-size value like "9pt" or "8pt" into a double.
+    /// </summary>
+    private static double ParseFontSize(string cssFontSize)
+    {
+        var match = Regex.Match(cssFontSize, @"([\d.]+)");
+        return match.Success && double.TryParse(match.Groups[1].Value,
+            NumberStyles.Float, CultureInfo.InvariantCulture, out var size)
+            ? size : 8;
     }
 
     // =====================================================================
@@ -496,6 +666,12 @@ public class HtmlExcelConverter
 }
 
 /// <summary>
-/// Simple record to hold row styling info.
+/// Row styling info parsed from CSS or using defaults.
 /// </summary>
-record RowStyle(XLColor FontColor, XLColor BackgroundColor, bool Bold);
+record RowStyle(XLColor FontColor, XLColor BackgroundColor, bool Bold,
+                double FontSize = 8, bool Italic = false);
+
+/// <summary>
+/// Table-level styling info (border color, etc.).
+/// </summary>
+record TableStyle(XLColor BorderColor);
