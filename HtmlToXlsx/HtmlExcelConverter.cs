@@ -430,7 +430,16 @@ public class HtmlExcelConverter
 
             var propMatch = Regex.Match(props, propRegex, RegexOptions.IgnoreCase);
             if (propMatch.Success)
-                lastValue = propMatch.Groups["value"].Value.Trim();
+            {
+                var val = propMatch.Groups["value"].Value.Trim();
+                // Skip non-concrete values — they mean "use the parent/inherited value"
+                if (!val.Equals("inherit", StringComparison.OrdinalIgnoreCase) &&
+                    !val.Equals("transparent", StringComparison.OrdinalIgnoreCase) &&
+                    !val.Equals("initial", StringComparison.OrdinalIgnoreCase))
+                {
+                    lastValue = val;
+                }
+            }
         }
 
         return lastValue;
