@@ -47,16 +47,16 @@ namespace GraspBI.Izenda
             TableStyle tableStyle;
             ParseCssStyles(doc, out rowStyles, out tableStyle);
 
-            var reportTables = doc.DocumentNode.SelectNodes("//table[contains(@class,'ReportTable')]");
-            if (reportTables == null || reportTables.Count == 0)
-                throw new InvalidOperationException("No <table class='ReportTable'> found in the input file.");
-
             var titleNode = doc.DocumentNode.SelectSingleNode("//span[contains(@class,'ReportTitle')]");
             var descNode = doc.DocumentNode.SelectSingleNode("//span[contains(@class,'Description')]");
             var reportTitle = titleNode != null ? (titleNode.InnerText ?? "").Trim() : null;
             var reportDesc = descNode != null ? (descNode.InnerText ?? "").Trim() : null;
 
-            var imgNodes = FindCidImages(doc);
+            // Find header logo (inside the header table, separate from chart images)
+            var headerLogoImages = FindHeaderLogoImages(doc);
+
+            // Find report sections in document order via report= attribute
+            var sectionDivs = doc.DocumentNode.SelectNodes("//div[@report]");
 
             using (var wb = new XLWorkbook())
             {
@@ -66,7 +66,8 @@ namespace GraspBI.Izenda
                 var ws = wb.AddWorksheet(sheetName);
 
                 int startRow = 1;
-                startRow = InsertImages(ws, imgNodes, mimeImages, startRow);
+                int imageIndex = 0;
+                startRow = InsertImages(ws, headerLogoImages, mimeImages, startRow, ref imageIndex);
 
                 if (!string.IsNullOrWhiteSpace(reportTitle))
                 {
@@ -89,54 +90,74 @@ namespace GraspBI.Izenda
                 if (startRow > 1)
                     startRow++;
 
-                for (int tableIdx = 0; tableIdx < reportTables.Count; tableIdx++)
+                // Process each report section in document order
+                if (sectionDivs != null)
                 {
-                    var reportTable = reportTables[tableIdx];
-                    var rows = reportTable.SelectNodes(".//tr");
-                    if (rows == null || rows.Count == 0) continue;
-
-                    if (tableIdx > 0)
-                        startRow += 2;
-
-                    for (int r = 0; r < rows.Count; r++)
+                    for (int sectionIdx = 0; sectionIdx < sectionDivs.Count; sectionIdx++)
                     {
-                        var tr = rows[r];
-                        var rowClass = GetClass(tr);
-                        var cells = tr.SelectNodes("td|th");
-                        if (cells == null) continue;
+                        var sectionDiv = sectionDivs[sectionIdx];
+                        var reportAttr = sectionDiv.GetAttributeValue("report", "");
 
-                        int col = 1;
-                        for (int c = 0; c < cells.Count; c++)
+                        if (reportAttr.StartsWith("Chart", StringComparison.OrdinalIgnoreCase))
                         {
-                            var td = cells[c];
-                            int colspan = td.GetAttributeValue("colspan", 1);
-                            if (colspan < 1) colspan = 1;
+                            // Chart section: insert chart images
+                            var chartImages = FindCidImagesInNode(sectionDiv);
+                            startRow = InsertImages(ws, chartImages, mimeImages, startRow, ref imageIndex);
+                        }
+                        else
+                        {
+                            // Data section (Detail, Summary, etc.): insert ReportTable
+                            var reportTable = sectionDiv.SelectSingleNode(".//table[contains(@class,'ReportTable')]");
+                            if (reportTable == null) continue;
 
-                            var xlCell = ws.Cell(startRow + r, col);
-                            var rawText = HtmlEntity.DeEntitize(td.InnerText).Trim();
-                            var formatClass = DetectFormatClass(td);
-                            SetCellValue(xlCell, rawText, formatClass);
-                            ApplyAlignment(xlCell, td);
-                            var cellClass = GetClass(td);
-                            var effectiveClass = !string.IsNullOrEmpty(rowClass) ? rowClass : cellClass;
-                            ApplyRowStyle(xlCell, effectiveClass, rowStyles, tableStyle);
+                            var rows = reportTable.SelectNodes(".//tr");
+                            if (rows == null || rows.Count == 0) continue;
 
-                            if (colspan > 1)
+                            if (sectionIdx > 0 && startRow > 1)
+                                startRow++;
+
+                            for (int r = 0; r < rows.Count; r++)
                             {
-                                var mergeRange = ws.Range(startRow + r, col, startRow + r, col + colspan - 1);
-                                mergeRange.Merge();                                
-                                foreach (var mergedCell in mergeRange.Cells())
+                                var tr = rows[r];
+                                var rowClass = GetClass(tr);
+                                var cells = tr.SelectNodes("td|th");
+                                if (cells == null) continue;
+
+                                int col = 1;
+                                for (int c = 0; c < cells.Count; c++)
                                 {
-                                    if (mergedCell != xlCell)
-                                        ApplyRowStyle(mergedCell, effectiveClass, rowStyles, tableStyle);
+                                    var td = cells[c];
+                                    int colspan = td.GetAttributeValue("colspan", 1);
+                                    if (colspan < 1) colspan = 1;
+
+                                    var xlCell = ws.Cell(startRow + r, col);
+                                    var rawText = HtmlEntity.DeEntitize(td.InnerText).Trim();
+                                    var formatClass = DetectFormatClass(td);
+                                    SetCellValue(xlCell, rawText, formatClass);
+                                    ApplyAlignment(xlCell, td);
+                                    var cellClass = GetClass(td);
+                                    var effectiveClass = !string.IsNullOrEmpty(rowClass) ? rowClass : cellClass;
+                                    ApplyRowStyle(xlCell, effectiveClass, rowStyles, tableStyle);
+
+                                    if (colspan > 1)
+                                    {
+                                        var mergeRange = ws.Range(startRow + r, col, startRow + r, col + colspan - 1);
+                                        mergeRange.Merge();
+                                        foreach (var mergedCell in mergeRange.Cells())
+                                        {
+                                            if (mergedCell != xlCell)
+                                                ApplyRowStyle(mergedCell, effectiveClass, rowStyles, tableStyle);
+                                        }
+                                    }
+
+                                    col += colspan;
                                 }
                             }
 
-                            col += colspan;
+                            startRow += rows.Count;
+                            startRow++; // gap after table
                         }
                     }
-
-                    startRow += rows.Count;
                 }
 
                 ws.Columns().AdjustToContents();
@@ -289,8 +310,6 @@ namespace GraspBI.Izenda
                     cell.Style.Font.Bold = style.Bold;
                     cell.Style.Font.Italic = style.Italic;
                     cell.Style.Font.FontSize = style.FontSize;
-                    cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
-                    cell.Style.Border.OutsideBorderColor = tableStyle.BorderColor;
 
                     if (kvp.Key == "ReportFooter")
                     {
@@ -302,6 +321,9 @@ namespace GraspBI.Izenda
                 }
             }
 
+            // Always apply borders and font to all cells in the table
+            cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+            cell.Style.Border.OutsideBorderColor = tableStyle.BorderColor;
             cell.Style.Font.FontName = "Tahoma";
         }
 
@@ -497,11 +519,19 @@ namespace GraspBI.Izenda
             return images;
         }
        
-        private static List<CidImageRef> FindCidImages(HtmlDocument doc)
+        private static List<CidImageRef> FindHeaderLogoImages(HtmlDocument doc)
+        {
+            // Logo is inside the header table (the one containing the ReportTitle), not in any report section
+            var headerTable = doc.DocumentNode.SelectSingleNode("//table[.//span[contains(@class,'ReportTitle')]]");
+            if (headerTable == null) return new List<CidImageRef>();
+            return FindCidImagesInNode(headerTable);
+        }
+
+        private static List<CidImageRef> FindCidImagesInNode(HtmlNode node)
         {
             var result = new List<CidImageRef>();
 
-            var imgNodes = doc.DocumentNode.SelectNodes("//img[contains(@src,'cid:')]");
+            var imgNodes = node.SelectNodes(".//img[contains(@src,'cid:')]");
             if (imgNodes == null) return result;
 
             foreach (var img in imgNodes)
@@ -531,12 +561,11 @@ namespace GraspBI.Izenda
             return result;
         }
 
-        private static int InsertImages(IXLWorksheet ws, List<CidImageRef> imgRefs, Dictionary<string, byte[]> mimeImages, int startRow)
+        private static int InsertImages(IXLWorksheet ws, List<CidImageRef> imgRefs, Dictionary<string, byte[]> mimeImages, int startRow, ref int imageIndex)
         {
             if (imgRefs.Count == 0 || mimeImages.Count == 0)
                 return startRow;
 
-            int imageIndex = 0;
             foreach (var imgRef in imgRefs)
             {
                 byte[] imageBytes;
