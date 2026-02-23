@@ -1,5 +1,6 @@
 
 using System.Globalization;
+using System.Linq;
 using System.Text.RegularExpressions;
 using ClosedXML.Excel;
 using HtmlAgilityPack;
@@ -179,28 +180,20 @@ namespace GraspBI.Izenda
             if (match != null) return match;
 
             var childDivs = td.SelectNodes(".//div[@class]");
-            if (childDivs != null)
-            {
-                foreach (var div in childDivs)
-                {
-                    match = FindFormatClass(GetClass(div));
-                    if (match != null) return match;
-                }
-            }
+            if (childDivs == null) return null;
 
-            return null;
+            return childDivs
+                .Select(div => FindFormatClass(GetClass(div)))
+                .FirstOrDefault(m => m != null);
         }
 
         private static string FindFormatClass(string cssClasses)
         {
             if (string.IsNullOrEmpty(cssClasses)) return null;
 
-            foreach (var key in FormatMap.Keys.OrderByDescending(k => k.Length))
-            {
-                if (cssClasses.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0)
-                    return key;
-            }
-            return null;
+            return FormatMap.Keys
+                .OrderByDescending(k => k.Length)
+                .FirstOrDefault(key => cssClasses.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private static void SetCellValue(IXLCell cell, string rawText, string formatClass)
@@ -300,24 +293,22 @@ namespace GraspBI.Izenda
         private static void ApplyRowStyle(IXLCell cell, string rowClass,
                                    Dictionary<string, RowStyle> rowStyles, TableStyle tableStyle)
         {
-            foreach (var kvp in rowStyles)
+            var matchingStyle = rowStyles.FirstOrDefault(kvp =>
+                rowClass.IndexOf(kvp.Key, StringComparison.OrdinalIgnoreCase) >= 0);
+
+            if (matchingStyle.Key != null)
             {
-                if (rowClass.IndexOf(kvp.Key, StringComparison.OrdinalIgnoreCase) >= 0)
+                var style = matchingStyle.Value;
+                cell.Style.Font.FontColor = style.FontColor;
+                cell.Style.Fill.BackgroundColor = style.BackgroundColor;
+                cell.Style.Font.Bold = style.Bold;
+                cell.Style.Font.Italic = style.Italic;
+                cell.Style.Font.FontSize = style.FontSize;
+
+                if (matchingStyle.Key == "ReportFooter")
                 {
-                    var style = kvp.Value;
-                    cell.Style.Font.FontColor = style.FontColor;
-                    cell.Style.Fill.BackgroundColor = style.BackgroundColor;
-                    cell.Style.Font.Bold = style.Bold;
-                    cell.Style.Font.Italic = style.Italic;
-                    cell.Style.Font.FontSize = style.FontSize;
-
-                    if (kvp.Key == "ReportFooter")
-                    {
-                        cell.Style.Border.TopBorder = XLBorderStyleValues.Double;
-                        cell.Style.Border.TopBorderColor = tableStyle.BorderColor;
-                    }
-
-                    break;
+                    cell.Style.Border.TopBorder = XLBorderStyleValues.Double;
+                    cell.Style.Border.TopBorderColor = tableStyle.BorderColor;
                 }
             }
 
@@ -432,15 +423,12 @@ namespace GraspBI.Izenda
             if (hexMatch.Success)
                 return ParseCssColor(hexMatch.Groups[1].Value);
 
-            var tokens = value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var t in tokens.Reverse())
-            {
-                if (!Regex.IsMatch(t, @"^\d") &&
-                    !Regex.IsMatch(t, @"^(solid|dashed|dotted|double|none|groove|ridge|inset|outset)$", RegexOptions.IgnoreCase))
-                    return ParseCssColor(t);
-            }
+            var colorToken = value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                .Reverse()
+                .FirstOrDefault(t => !Regex.IsMatch(t, @"^\d") &&
+                    !Regex.IsMatch(t, @"^(solid|dashed|dotted|double|none|groove|ridge|inset|outset)$", RegexOptions.IgnoreCase));
 
-            return null;
+            return colorToken != null ? ParseCssColor(colorToken) : null;
         }
 
         private static XLColor ParseCssColor(string cssColor)
