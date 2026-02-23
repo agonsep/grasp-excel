@@ -117,7 +117,9 @@ namespace GraspBI.Izenda
                             var formatClass = DetectFormatClass(td);
                             SetCellValue(xlCell, rawText, formatClass);
                             ApplyAlignment(xlCell, td);
-                            ApplyRowStyle(xlCell, rowClass, rowStyles, tableStyle);
+                            var cellClass = GetClass(td);
+                            var effectiveClass = !string.IsNullOrEmpty(rowClass) ? rowClass : cellClass;
+                            ApplyRowStyle(xlCell, effectiveClass, rowStyles, tableStyle);
 
                             if (colspan > 1)
                             {
@@ -126,7 +128,7 @@ namespace GraspBI.Izenda
                                 foreach (var mergedCell in mergeRange.Cells())
                                 {
                                     if (mergedCell != xlCell)
-                                        ApplyRowStyle(mergedCell, rowClass, rowStyles, tableStyle);
+                                        ApplyRowStyle(mergedCell, effectiveClass, rowStyles, tableStyle);
                                 }
                             }
 
