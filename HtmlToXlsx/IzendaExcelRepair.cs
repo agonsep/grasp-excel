@@ -47,8 +47,8 @@ namespace GraspBI.Izenda
             TableStyle tableStyle;
             ParseCssStyles(doc, out rowStyles, out tableStyle);
 
-            var reportTable = doc.DocumentNode.SelectSingleNode("//table[contains(@class,'ReportTable')]");
-            if (reportTable == null)
+            var reportTables = doc.DocumentNode.SelectNodes("//table[contains(@class,'ReportTable')]");
+            if (reportTables == null || reportTables.Count == 0)
                 throw new InvalidOperationException("No <table class='ReportTable'> found in the input file.");
 
             var titleNode = doc.DocumentNode.SelectSingleNode("//span[contains(@class,'ReportTitle')]");
@@ -57,10 +57,6 @@ namespace GraspBI.Izenda
             var reportDesc = descNode != null ? (descNode.InnerText ?? "").Trim() : null;
 
             var imgNodes = FindCidImages(doc);
-
-            var rows = reportTable.SelectNodes(".//tr");
-            if (rows == null || rows.Count == 0)
-                throw new InvalidOperationException("No rows found in the report table.");
 
             using (var wb = new XLWorkbook())
             {
@@ -93,23 +89,52 @@ namespace GraspBI.Izenda
                 if (startRow > 1)
                     startRow++;
 
-                for (int r = 0; r < rows.Count; r++)
+                for (int tableIdx = 0; tableIdx < reportTables.Count; tableIdx++)
                 {
-                    var tr = rows[r];
-                    var rowClass = GetClass(tr);
-                    var cells = tr.SelectNodes("td|th");
-                    if (cells == null) continue;
+                    var reportTable = reportTables[tableIdx];
+                    var rows = reportTable.SelectNodes(".//tr");
+                    if (rows == null || rows.Count == 0) continue;
 
-                    for (int c = 0; c < cells.Count; c++)
+                    if (tableIdx > 0)
+                        startRow += 2;
+
+                    for (int r = 0; r < rows.Count; r++)
                     {
-                        var td = cells[c];
-                        var xlCell = ws.Cell(startRow + r, c + 1);
-                        var rawText = HtmlEntity.DeEntitize(td.InnerText).Trim();
-                        var formatClass = DetectFormatClass(td);
-                        SetCellValue(xlCell, rawText, formatClass);
-                        ApplyAlignment(xlCell, td);
-                        ApplyRowStyle(xlCell, rowClass, rowStyles, tableStyle);
+                        var tr = rows[r];
+                        var rowClass = GetClass(tr);
+                        var cells = tr.SelectNodes("td|th");
+                        if (cells == null) continue;
+
+                        int col = 1;
+                        for (int c = 0; c < cells.Count; c++)
+                        {
+                            var td = cells[c];
+                            int colspan = td.GetAttributeValue("colspan", 1);
+                            if (colspan < 1) colspan = 1;
+
+                            var xlCell = ws.Cell(startRow + r, col);
+                            var rawText = HtmlEntity.DeEntitize(td.InnerText).Trim();
+                            var formatClass = DetectFormatClass(td);
+                            SetCellValue(xlCell, rawText, formatClass);
+                            ApplyAlignment(xlCell, td);
+                            ApplyRowStyle(xlCell, rowClass, rowStyles, tableStyle);
+
+                            if (colspan > 1)
+                            {
+                                var mergeRange = ws.Range(startRow + r, col, startRow + r, col + colspan - 1);
+                                mergeRange.Merge();                                
+                                foreach (var mergedCell in mergeRange.Cells())
+                                {
+                                    if (mergedCell != xlCell)
+                                        ApplyRowStyle(mergedCell, rowClass, rowStyles, tableStyle);
+                                }
+                            }
+
+                            col += colspan;
+                        }
                     }
+
+                    startRow += rows.Count;
                 }
 
                 ws.Columns().AdjustToContents();
@@ -469,7 +494,6 @@ namespace GraspBI.Izenda
 
             return images;
         }
-
        
         private static List<CidImageRef> FindCidImages(HtmlDocument doc)
         {
@@ -584,7 +608,6 @@ namespace GraspBI.Izenda
             Height = height;
         }
     }
-
 
     public sealed class TableStyle
     {
