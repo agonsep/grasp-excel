@@ -1,28 +1,12 @@
-﻿using System;
-using System.IO;
-
-namespace HtmlToXlsx;
+﻿namespace GraspBI.Izenda;
 
 class Program
 {
-    static int Main(string[] args)
+    static int Main()
     {
-        if (args.Length < 1)
-        {
-            Console.WriteLine("Usage: HtmlToXlsx <source-folder>");
-            Console.WriteLine();
-            Console.WriteLine("Converts all HTML-based .xls and .mht files in the folder to proper .xlsx files.");
-            return 1;
-        }
 
-        var sourcePath = args[0];
-
-        if (!Directory.Exists(sourcePath))
-        {
-            Console.Error.WriteLine($"Error: Directory not found: {sourcePath}");
-            return 1;
-        }
-
+        var sourcePath = "C:\\dev\\grasp-excel\\files";
+       
         var extensions = new[] { "*.xls", "*.mht" };
         var files = extensions.SelectMany(ext => Directory.GetFiles(sourcePath, ext)).ToArray();
 

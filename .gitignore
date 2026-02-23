@@ -1,6 +1,9 @@
 # .NET Core
 **/bin/
 **/obj/
+**/ref/
+**/refint/
+**/net*/
 
 # Visual Studio files
 .vs/
