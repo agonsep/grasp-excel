@@ -16,7 +16,6 @@ class Program
             return 0;
         }
 
-        var converter = new HtmlExcelConverter();
         int success = 0, failure = 0;
 
         foreach (var inputFile in files)
@@ -27,7 +26,7 @@ class Program
 
             try
             {
-                converter.Convert(inputFile, outputFile);
+                IzendaExcelRepair.RepairFile(inputFile, outputFile);
                 Console.WriteLine($"Converted: {Path.GetFileName(inputFile)} -> {Path.GetFileName(outputFile)}");
                 success++;
             }
