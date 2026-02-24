@@ -63,6 +63,7 @@ namespace GraspBI.Izenda
                     ? SanitizeSheetName(reportTitle)
                     : "Report";
                 var ws = wb.AddWorksheet(sheetName);
+                ws.ShowGridLines = false;
 
                 int startRow = 1;
                 int imageIndex = 0;
@@ -335,6 +336,7 @@ namespace GraspBI.Izenda
             }
 
             var cssText = string.Join("\n", styleNodes.Select(s => s.InnerText));
+            tableStyle = DefaultTableStyle;
 
             var result = new Dictionary<string, RowStyle>(StringComparer.OrdinalIgnoreCase);
             foreach (var className in new[] { "ReportHeader", "ReportItem", "AlternatingItem", "ReportFooter" })
@@ -362,9 +364,12 @@ namespace GraspBI.Izenda
             }
 
             var tableBorderColorStr = FindCssProperty(cssText, "ReportTable", "border-color");
-            tableStyle = tableBorderColorStr != null
-                ? new TableStyle(ParseCssColor(tableBorderColorStr))
-                : DefaultTableStyle;
+            if (tableBorderColorStr != null)
+            {
+                var parsedTableBorder = ParseCssColor(tableBorderColorStr);
+                if (!IsInvisibleColor(parsedTableBorder))
+                    tableStyle = new TableStyle(parsedTableBorder);
+            }
 
             var cellBorderColor = FindCellBorderColor(cssText);
             if (cellBorderColor != null && !IsInvisibleColor(cellBorderColor))
