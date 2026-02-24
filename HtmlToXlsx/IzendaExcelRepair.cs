@@ -53,10 +53,8 @@ namespace GraspBI.Izenda
             var reportTitle = titleNode != null ? (titleNode.InnerText ?? "").Trim() : null;
             var reportDesc = descNode != null ? (descNode.InnerText ?? "").Trim() : null;
 
-            // Find header logo (inside the header table, separate from chart images)
             var headerLogoImages = FindHeaderLogoImages(doc);
 
-            // Find report sections in document order via report= attribute
             var sectionDivs = doc.DocumentNode.SelectNodes("//div[@report]");
 
             using (var wb = new XLWorkbook())
@@ -91,7 +89,6 @@ namespace GraspBI.Izenda
                 if (startRow > 1)
                     startRow++;
 
-                // Process each report section in document order
                 if (sectionDivs != null)
                 {
                     for (int sectionIdx = 0; sectionIdx < sectionDivs.Count; sectionIdx++)
@@ -101,13 +98,11 @@ namespace GraspBI.Izenda
 
                         if (reportAttr.StartsWith("Chart", StringComparison.OrdinalIgnoreCase))
                         {
-                            // Chart section: insert chart images
                             var chartImages = FindCidImagesInNode(sectionDiv);
                             startRow = InsertImages(ws, chartImages, mimeImages, startRow, ref imageIndex);
                         }
                         else
                         {
-                            // Data section (Detail, Summary, etc.): insert ReportTable
                             var reportTable = sectionDiv.SelectSingleNode(".//table[contains(@class,'ReportTable')]");
                             if (reportTable == null) continue;
 
@@ -156,7 +151,7 @@ namespace GraspBI.Izenda
                             }
 
                             startRow += rows.Count;
-                            startRow++; // gap after table
+                            startRow++;
                         }
                     }
                 }
@@ -216,8 +211,9 @@ namespace GraspBI.Izenda
                         cell.Style.NumberFormat.Format = FormatMap[formatClass];
                         return;
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        throw new InvalidOperationException(string.Format("Failed to convert OADate value '{0}'", rawText), ex);
                     }
                 }
                 cell.Value = rawText;
@@ -312,7 +308,6 @@ namespace GraspBI.Izenda
                 }
             }
 
-            // Always apply borders and font to all cells in the table
             cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
             cell.Style.Border.OutsideBorderColor = tableStyle.BorderColor;
             cell.Style.Font.FontName = "Tahoma";
@@ -372,7 +367,7 @@ namespace GraspBI.Izenda
                 : DefaultTableStyle;
 
             var cellBorderColor = FindCellBorderColor(cssText);
-            if (cellBorderColor != null)
+            if (cellBorderColor != null && !IsInvisibleColor(cellBorderColor))
                 tableStyle = new TableStyle(cellBorderColor);
 
             rowStyles = result;
@@ -454,15 +449,29 @@ namespace GraspBI.Izenda
             }
         }
 
+        private static bool IsInvisibleColor(XLColor color)
+        {
+            if (color == XLColor.NoColor) return true;
+            try
+            {
+                var c = color.Color;
+                return c.R >= 250 && c.G >= 250 && c.B >= 250;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Failed to evaluate border color visibility", ex);
+            }
+        }
+
         private static XLColor TryParseNamedColor(string name)
         {
             try
             {
                 return XLColor.FromName(name);
             }
-            catch
+            catch (Exception ex)
             {
-                return XLColor.Black;
+                throw new InvalidOperationException(string.Format("Failed to parse color name '{0}'", name), ex);
             }
         }
 
@@ -499,8 +508,9 @@ namespace GraspBI.Izenda
                     var bytes = System.Convert.FromBase64String(base64);
                     images[cid] = bytes;
                 }
-                catch (FormatException)
+                catch (FormatException ex)
                 {
+                    throw new InvalidOperationException(string.Format("Failed to decode base64 image for CID '{0}'", cid), ex);
                 }
             }
 
@@ -509,7 +519,6 @@ namespace GraspBI.Izenda
        
         private static List<CidImageRef> FindHeaderLogoImages(HtmlDocument doc)
         {
-            // Logo is inside the header table (the one containing the ReportTitle), not in any report section
             var headerTable = doc.DocumentNode.SelectSingleNode("//table[.//span[contains(@class,'ReportTitle')]]");
             if (headerTable == null) return new List<CidImageRef>();
             return FindCidImagesInNode(headerTable);
